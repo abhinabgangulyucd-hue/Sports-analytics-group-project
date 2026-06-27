@@ -1,19 +1,4 @@
-# ============================================================
-# EPL TACTICAL INTELLIGENCE DASHBOARD — No-Proxy Edition
-# Season: Premier League 2024/25
-#
-# Required files in ./data/
-#   team_stats.csv       (provided)
-#   fbref_pl.csv         (provided)
-#   squad_stats.csv      (provided)
-#
-# Optional supplementary file (enables true SQR & DCS):
-#   defensive_stats.csv  — Download from Kaggle:
-#   https://www.kaggle.com/datasets/hubertsidorowicz/
-#          football-players-stats-2024-2025
-#   Use players_data_light-2024_2025.csv, rename to defensive_stats.csv
-#   Required columns from it: Player, Squad, Sh, TklW, Int, Clr, 90s
-# ============================================================
+
 
 import os
 from typing import Dict, List, Optional, Tuple
