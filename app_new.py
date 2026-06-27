@@ -1,5 +1,4 @@
 
-
 import os
 from typing import Dict, List, Optional, Tuple
 
@@ -440,7 +439,7 @@ def main():
         compare_team  = st.selectbox("Comparison team", teams, index=compare_idx,
             help="Used in the team radar comparison.")
         role_choices  = st.multiselect("Player role filter",
-            ["Forward","Midfielder","Defender","Goalkeeper","Hybrid"],
+            ["Forward","Midfielder","Defender","Goalkeeper"],
             default=["Forward","Midfielder","Defender"])
         min_90s       = st.slider("Minimum 90s played", 0.0,
             float(player_df["90s"].max()), 3.0, 0.5,
@@ -709,7 +708,6 @@ Rename to <code>defensive_stats.csv</code> and place in <code>./data/</code>
                     color_discrete_map={
                         "Forward": THEME["accent"], "Midfielder": THEME["accent_2"],
                         "Defender": THEME["warning"], "Goalkeeper": THEME["danger"],
-                        "Hybrid": "#a78bfa",
                     },
                 )
                 fig.update_traces(textposition="top center")
@@ -724,7 +722,6 @@ Rename to <code>defensive_stats.csv</code> and place in <code>./data/</code>
                     color_discrete_map={
                         "Forward": THEME["accent"], "Midfielder": THEME["accent_2"],
                         "Defender": THEME["warning"], "Goalkeeper": THEME["danger"],
-                        "Hybrid": "#a78bfa",
                     },
                 )
                 fig.update_traces(textposition="top center")
