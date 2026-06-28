@@ -39,7 +39,7 @@ html,body,[class*="css"]{{color:var(--text);font-family:Inter,Segoe UI,sans-seri
 [data-testid="stAppViewContainer"]{{background:linear-gradient(180deg,#0b1220,#0f172a);overflow-x:hidden;}}
 [data-testid="stHeader"]{{background:rgba(15,23,42,0.80);}}
 [data-testid="stSidebar"]>div:first-child{{background:var(--surface);border-right:1px solid var(--border);min-width:250px;max-width:280px;padding:0.75rem 0.85rem 0.85rem;}}
-[data-testid="stToolbar"],[data-testid="stDecoration"]{{visibility:hidden;display:none;}}
+[data-testid="stDecoration"]{{visibility:hidden;display:none;}}
 .block-container{{padding-top:1rem;padding-bottom:1.2rem;max-width:1180px;}}
 h1,h2,h3{{color:var(--text)!important;letter-spacing:-0.02em;}}
 
@@ -619,7 +619,7 @@ def main():
         st.markdown("**FWPL** — live (xG, xGA, Poisson sim)")
         st.markdown(f"**SID def** — {'live (TklW, Int, Clr)' if dcs_live else 'manual slider (no def data)'}")
 
-        with st.expander("How each KPI is calculated", expanded=False):
+        with st.expander("How each KPI is calculated", expanded=True):
             st.markdown("""
 - **xG_90** = xG ÷ 90s
 - **xAG_90** = xAG ÷ 90s
@@ -1192,7 +1192,6 @@ def main():
         ], columns=["Field","Source","Meaning"])
         st.dataframe(gloss, use_container_width=True, hide_index=True, height=450)
 
-    st.markdown("---")
     st.caption("KPIs are computed from FBref fields; no proxy values are used.")
 
 
