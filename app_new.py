@@ -1157,19 +1157,16 @@ def main():
     with tabs[4]:
         st.subheader("KPI data source map")
         rows = [
-            ["ATI","fbref_pl: xG, xAG, 90s"," Fully live"],
-            ["FTPE","fbref_pl: PrgC, PrgP, 90s"," Fully live"],
-            ["FWPL","team_stats: xG, xGA, MP + Poisson sim"," Live (heuristic formation factors)"],
-            ["SID attacking side","fbref_pl: xG, xAG, 90s"," Fully live"],
-            ["SID defensive side","defensive_stats: TklW, Int, Clr, 90s",
-             " Live if file loaded |  Manual slider if not"],
-            ["SQR","defensive_stats: Sh per player → team total shots",
-             " Live if file loaded |  Not shown if not"],
-            ["DCS","defensive_stats: TklW, Int, Clr → team total; team_stats: xGA",
-             " Live if file loaded |  Not shown if not"],
+            ["ATI","fbref_pl: xG, xAG, 90s"],
+            ["FTPE","fbref_pl: PrgC, PrgP, 90s"],
+            ["FWPL","team_stats: xG, xGA, MP + Poisson sim"],
+            ["SID attacking side","fbref_pl: xG, xAG, 90s"],
+            ["SID defensive side","defensive_stats: TklW, Int, Clr, 90s"],
+            ["SQR","defensive_stats: Sh per player → team total shots"],
+            ["DCS","defensive_stats: TklW, Int, Clr → team total; team_stats: xGA"],
         ]
         st.dataframe(
-            pd.DataFrame(rows, columns=["KPI","Fields used","Status"]),
+            pd.DataFrame(rows, columns=["KPI","Fields used"]),
             use_container_width=True, hide_index=True,
         )
 
