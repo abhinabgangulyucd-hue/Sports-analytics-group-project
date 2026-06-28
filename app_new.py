@@ -125,11 +125,62 @@ NUMERIC_DEF   = ["Sh","TklW","Int","Clr","90s"]
 # DATA LOADING
 # ─────────────────────────────────────────────
 def locate_csv(names: List[str]) -> Optional[str]:
-    for base in [".", "data", "/home/user", "/home/user/data"]:
+    """
+    Search a short list of sensible folders for any of the requested filenames.
+    Returns the first matching path or None. Matching is forgiving: exact
+    filename first, then files that contain the base name and end with `.csv`.
+    """
+    cwd = os.getcwd()
+    script_dir = None
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        pass
+
+    home = os.path.expanduser('~')
+
+    candidates = [
+        cwd,
+        os.path.join(cwd, 'data'),
+        script_dir,
+        os.path.join(script_dir, 'data') if script_dir else None,
+        home,
+        os.path.join(home, 'Desktop'),
+    ]
+
+    # add a few parent folders of cwd/script_dir to catch project layouts
+    for start in (cwd, script_dir):
+        cur = start
+        for _ in range(3):
+            if not cur:
+                break
+            cur = os.path.dirname(cur)
+            candidates.append(cur)
+            candidates.append(os.path.join(cur, 'data'))
+
+    seen = set()
+    for base in candidates:
+        if not base or base in seen:
+            continue
+        seen.add(base)
+        try:
+            files = os.listdir(base)
+        except Exception:
+            files = []
+
         for name in names:
             p = os.path.join(base, name)
             if os.path.exists(p):
                 return p
+
+        # fuzzy: match files that contain the name base and end with .csv
+        for f in files:
+            fl = f.lower()
+            for name in names:
+                base_name = os.path.splitext(name)[0].lower()
+                if fl == name.lower() or (base_name in fl and fl.endswith('.csv')):
+                    return os.path.join(base, f)
+
     return None
 
 def validate_columns(df: pd.DataFrame, required: List[str], name: str) -> None:
@@ -137,7 +188,42 @@ def validate_columns(df: pd.DataFrame, required: List[str], name: str) -> None:
     if missing:
         raise ValueError(f"{name} is missing required columns: {missing}")
 
-@st.cache_data(show_spinner=True)
+
+def _normalize_defensive_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Try to make defensive files forgiving to minor column-name differences.
+    Renames common variants like '90'->'90s', 'Tkl'->'TklW', 'Shots'->'Sh'.
+    """
+    cols = {c: c for c in df.columns}
+    lower = {c.lower(): c for c in df.columns}
+
+    def pick(*names):
+        for n in names:
+            if n.lower() in lower:
+                return lower[n.lower()]
+        return None
+
+    # map common variations
+    mapping = {}
+    if pick('90s') is None and pick('90') is not None:
+        mapping[pick('90')] = '90s'
+    if pick('TklW') is None and pick('Tkl') is not None:
+        mapping[pick('Tkl')] = 'TklW'
+    if pick('Int') is None and pick('Ints') is not None:
+        mapping[pick('Ints')] = 'Int'
+    if pick('Clr') is None and pick('Clearances') is not None:
+        mapping[pick('Clearances')] = 'Clr'
+    if pick('Sh') is None and pick('Shots') is not None:
+        mapping[pick('Shots')] = 'Sh'
+    if pick('Player') is None and pick('Name') is not None:
+        mapping[pick('Name')] = 'Player'
+    if pick('Squad') is None and pick('Team') is not None:
+        mapping[pick('Team')] = 'Squad'
+
+    if mapping:
+        df = df.rename(columns=mapping)
+    return df
+
 def load_data():
     team_path  = locate_csv(["team_stats.csv"])
     fbref_path = locate_csv(["fbref_pl.csv", "fbref_PL.csv"])
@@ -174,19 +260,22 @@ def load_data():
         try:
             def_df = pd.read_csv(def_path)
             def_df.columns = [c.strip() for c in def_df.columns]
+            # try to be forgiving about column names
+            def_df = _normalize_defensive_columns(def_df)
             # Filter to PL only if Comp column exists
             if "Comp" in def_df.columns:
                 def_df = def_df[def_df["Comp"].astype(str).str.contains("Premier", case=False, na=False)]
             missing_def = [c for c in DEF_COLS_NEEDED if c not in def_df.columns]
             if missing_def:
-                def_df = None  # file exists but lacks needed columns
+                # If the file lacks strict columns, drop and treat as not available
+                def_df = None
             else:
                 for c in NUMERIC_DEF:
                     def_df[c] = pd.to_numeric(def_df[c], errors="coerce")
         except Exception:
             def_df = None
 
-    return team, fbref, squad, def_df
+    return team, fbref, squad, def_df, def_path
 
 # ─────────────────────────────────────────────
 # KPI CALCULATIONS
@@ -215,20 +304,59 @@ def add_defensive_player_metrics(player_df: pd.DataFrame,
     Merges true defensive action counts from the supplementary file.
     TklW + Int + Clr per 90 gives the defensive actions per 90 for SID defensive index.
     """
+    # If there's no defensive file, create the expected columns with NaN
     if def_df is None:
-        player_df["Def_Actions_90"] = np.nan
-        player_df["SID_def_idx"]    = np.nan
+        for c in ["Sh", "TklW", "Int", "Clr", "Def_Actions_90", "SID_def_idx"]:
+            player_df[c] = np.nan
         return player_df
 
-    def_agg = def_df[["Player", "Squad", "TklW", "Int", "Clr", "90s"]].copy()
-    def_agg["Def_Actions_90"] = np.where(
-        def_agg["90s"] > 0,
-        (def_agg["TklW"] + def_agg["Int"] + def_agg["Clr"]) / def_agg["90s"],
-        0,
-    )
-    def_agg = def_agg[["Player", "Squad", "Def_Actions_90"]].copy()
-    merged  = player_df.merge(def_agg, on=["Player", "Squad"], how="left")
-    merged["SID_def_idx"] = merged["Def_Actions_90"]
+    # Pick relevant columns if they exist
+    take = [c for c in ["Player", "Squad", "Sh", "TklW", "Int", "Clr", "90s"] if c in def_df.columns]
+    def_agg = def_df[take].copy()
+    # Ensure numeric where expected
+    for c in ["Sh", "TklW", "Int", "Clr", "90s"]:
+        if c in def_agg.columns:
+            def_agg[c] = pd.to_numeric(def_agg[c], errors="coerce")
+
+    # Compute per-90 defensive actions if we have the ingredients
+    if all(c in def_agg.columns for c in ["TklW", "Int", "Clr", "90s"]):
+        def_agg["Def_Actions_90"] = np.where(
+            def_agg["90s"] > 0,
+            (def_agg["TklW"] + def_agg["Int"] + def_agg["Clr"]) / def_agg["90s"],
+            0,
+        )
+    else:
+        def_agg["Def_Actions_90"] = np.nan
+    # Normalize player and squad names for a more robust join
+    player_df = player_df.copy()
+    def_agg = def_agg.copy()
+    if "Player" in player_df.columns:
+        player_df["Player_key"] = player_df["Player"].astype(str).str.strip().str.lower()
+    else:
+        player_df["Player_key"] = ""
+    if "Squad" in player_df.columns:
+        player_df["Squad_key"] = player_df["Squad"].astype(str).str.strip().str.lower()
+    else:
+        player_df["Squad_key"] = ""
+
+    if "Player" in def_agg.columns:
+        def_agg["Player_key"] = def_agg["Player"].astype(str).str.strip().str.lower()
+    else:
+        def_agg["Player_key"] = ""
+    if "Squad" in def_agg.columns:
+        def_agg["Squad_key"] = def_agg["Squad"].astype(str).str.strip().str.lower()
+    else:
+        def_agg["Squad_key"] = ""
+
+    merge_on = ["Player_key", "Squad_key"]
+    merged = player_df.merge(def_agg.drop(columns=[c for c in ["90s"] if c in def_agg.columns], errors='ignore'),
+                              left_on=merge_on, right_on=merge_on, how="left", suffixes=("","_def"))
+    # SID defensive index is simply the Def_Actions_90 for now
+    merged["SID_def_idx"] = merged.get("Def_Actions_90")
+    # Clean up helper keys
+    for k in ["Player_key","Squad_key"]:
+        if k in merged.columns:
+            merged.drop(columns=[k], inplace=True)
     return merged
 
 
@@ -238,6 +366,9 @@ def add_team_metrics(team: pd.DataFrame,
     t = team.copy()
     t["xG_per_match"]  = np.where(t["MP"] > 0, t["xG"]  / t["MP"], np.nan)
     t["xGA_per_match"] = np.where(t["MP"] > 0, t["xGA"] / t["MP"], np.nan)
+    # League averages stored on every row so opponent-aware FWPL can reference them
+    t["league_avg_xG_pm"]  = t["xG_per_match"].mean()
+    t["league_avg_xGA_pm"] = t["xGA_per_match"].mean()
 
     # ── KPI 2: SQR — true formula needs shots per team ──
     if def_df is not None and "Sh" in def_df.columns:
@@ -371,14 +502,45 @@ def simulate_poisson(lam_for: float, lam_against: float,
     ga  = rng.poisson(max(lam_against, 0), size=n)
     return (gf > ga).mean(), (gf == ga).mean(), (gf < ga).mean()
 
-def compute_fwpl(team_row, cur_f: str, new_f: str):
-    bf = float(team_row["xG_per_match"])
-    ba = float(team_row["xGA_per_match"])
+def compute_fwpl(team_row, opp_row, cur_f: str, new_f: str):
+    """
+    Opponent-aware FWPL.
+
+    team_lam  = team_xG_pm  * att_factor * opp_def_str
+    opp_lam   = team_xGA_pm * opp_att_str / def_factor
+
+    opp_att_str = opp_xG_pm  / league_avg_xG_pm   (how threatening they are)
+    opp_def_str = opp_xGA_pm / league_avg_xGA_pm   (how leaky they are — bigger = easier to score against)
+    """
+    team_xg_pm  = float(team_row["xG_per_match"])
+    team_xga_pm = float(team_row["xGA_per_match"])
+    opp_xg_pm   = float(opp_row["xG_per_match"])
+    opp_xga_pm  = float(opp_row["xGA_per_match"])
+
+    # league context stored on team_row (added in add_team_metrics)
+    lg_avg = float(team_row.get("league_avg_xG_pm", team_xg_pm))  # fallback to self if missing
+
+    opp_att_str = opp_xg_pm  / max(lg_avg, 0.01)
+    opp_def_str = opp_xga_pm / max(lg_avg, 0.01)
+
     ac, dc = FORMATION_MULTIPLIERS[cur_f]
     an, dn = FORMATION_MULTIPLIERS[new_f]
-    curr = simulate_poisson(bf * ac, ba * dc)
-    new_ = simulate_poisson(bf * an, ba * dn)
-    return curr, new_, new_[0] - curr[0]
+
+    lam_for_cur  = team_xg_pm  * ac * opp_def_str
+    lam_opp_cur  = team_xga_pm * opp_att_str / max(dc, 0.01)
+    lam_for_new  = team_xg_pm  * an * opp_def_str
+    lam_opp_new  = team_xga_pm * opp_att_str / max(dn, 0.01)
+
+    curr = simulate_poisson(lam_for_cur, lam_opp_cur)
+    new_ = simulate_poisson(lam_for_new, lam_opp_new)
+
+    return {
+        "curr": curr, "new_": new_,
+        "fwpl": new_[0] - curr[0],
+        "lam_for_cur": lam_for_cur, "lam_opp_cur": lam_opp_cur,
+        "lam_for_new": lam_for_new, "lam_opp_new": lam_opp_new,
+        "opp_att_str": round(opp_att_str, 3), "opp_def_str": round(opp_def_str, 3),
+    }
 
 def compute_sid(rem_min: int, xg_pm: float, xga_pm: float,
                 atk_out: float, atk_in: float,
@@ -416,7 +578,7 @@ def main():
     st.caption("Premier League 2024/25 — All KPIs use only real data fields, no proxies.")
 
     try:
-        team_raw, fbref_raw, squad_raw, def_df = load_data()
+        team_raw, fbref_raw, squad_raw, def_df, def_path = load_data()
     except Exception as exc:
         st.error(str(exc))
         st.stop()
@@ -450,6 +612,8 @@ def main():
         st.markdown("### Data status")
         st.markdown(f"**SQR** — {'live (shots available)' if sqr_live else 'N/A (add defensive_stats.csv)'}")
         st.markdown(f"**DCS** — {'live (def actions available)' if dcs_live else 'N/A (add defensive_stats.csv)'}")
+        # Defensive file presence is used internally; keep status brief
+        # (users should place defensive CSVs in the project's `data/` folder)
         st.markdown("**ATI** — live (xG, xAG, 90s)")
         st.markdown("**FTPE** — live (PrgC, PrgP, 90s)")
         st.markdown("**FWPL** — live (xG, xGA, Poisson sim)")
@@ -478,14 +642,7 @@ def main():
 - **FWPL** = Poisson simulation win/draw/loss probability shift from xG/xGA and formation multipliers
 """)
 
-        if not sqr_live or not dcs_live:
-            st.markdown("""
-<div class="miss-box" style="font-size:0.82rem;">
-<b>To unlock SQR & DCS:</b><br>
-Download <code>players_data_light-2024_2025.csv</code> from<br>
-<a href="https://www.kaggle.com/datasets/hubertsidorowicz/football-players-stats-2024-2025" target="_blank">Kaggle → Sidorowicz FBref 24/25</a><br>
-Rename to <code>defensive_stats.csv</code> and place in <code>./data/</code>
-</div>""", unsafe_allow_html=True)
+
 
     # ── FILTER PLAYERS ──
     fp = player_df[player_df["90s"] >= min_90s].copy()
@@ -741,14 +898,18 @@ Rename to <code>defensive_stats.csv</code> and place in <code>./data/</code>
             # Player table
             view_cols = ["Player","Pos","Role_Label","90s","Starts","Gls","Ast",
                          "xG_90","xAG_90","Progression_90","ATI","Selection_Load","Sample_Flag"]
-            if dcs_live and "Def_Actions_90" in tp.columns:
-                view_cols.insert(-1, "Def_Actions_90")
+            # If defensive data is live, surface the core defensive counts too
+            if dcs_live and any(c in tp.columns for c in ["Def_Actions_90","TklW","Int","Clr","Sh"]):
+                # Add counts before the sample flag
+                def_cols = [c for c in ["Sh","TklW","Int","Clr","Def_Actions_90"] if c in tp.columns]
+                for c in reversed(def_cols):
+                    view_cols.insert(-1, c)
             st.dataframe(
                 tp[view_cols].sort_values("ATI", ascending=False)
                 .reset_index(drop=True).style.format({
                     "90s":"{:.1f}","xG_90":"{:.2f}","xAG_90":"{:.2f}",
                     "Progression_90":"{:.2f}","ATI":"{:.3f}","Selection_Load":"{:.2f}",
-                    "Def_Actions_90":"{:.2f}",
+                    "Def_Actions_90":"{:.2f}","Sh":"{:.0f}","TklW":"{:.1f}","Int":"{:.1f}","Clr":"{:.1f}",
                 }),
                 use_container_width=True, height=480,
             )
@@ -836,28 +997,159 @@ Rename to <code>defensive_stats.csv</code> and place in <code>./data/</code>
                              use_container_width=True)
 
         with sub_tabs[2]:
-            cc1, cc2 = st.columns(2)
-            with cc1: cur_f = st.selectbox("Current formation", list(FORMATION_MULTIPLIERS), index=0)
-            with cc2: new_f = st.selectbox("Proposed formation", list(FORMATION_MULTIPLIERS), index=2)
+            st.markdown(
+                '<div class="info-box"><b>Formation Sandbox</b> — 10,000 Poisson simulations per scenario. '                'All base rates come from real season xG/xGA. The only assumed values are the formation '                'attack/defence multipliers. Changing the opponent changes the λ values and therefore '                'the Win/Draw/Loss probabilities.</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown("")
 
-            curr_p, new_p, fwpl_v = compute_fwpl(sel_row, cur_f, new_f)
-            res_df = pd.DataFrame({
-                "Outcome":["Win","Draw","Loss"],
-                cur_f: curr_p, new_f: new_p,
-            })
-            fig = go.Figure()
-            fig.add_trace(go.Bar(x=res_df["Outcome"], y=res_df[cur_f],
-                                  name=cur_f, marker_color=THEME["accent_2"]))
-            fig.add_trace(go.Bar(x=res_df["Outcome"], y=res_df[new_f],
-                                  name=new_f, marker_color=THEME["accent"]))
-            fig.update_layout(barmode="group")
-            style_plot(fig, f"Formation scenario — {selected_team}", 420)
-            st.plotly_chart(fig, use_container_width=True)
+            # ── Controls ──
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                cur_f = st.selectbox(
+                    "Current formation", list(FORMATION_MULTIPLIERS), index=4,
+                    help="Your team's current shape (4-4-2 is the neutral baseline).")
+            with col_b:
+                new_f = st.selectbox(
+                    "Proposed formation", list(FORMATION_MULTIPLIERS), index=5,
+                    help="The formation you are considering switching to.")
+            # Use the main comparison team as the opponent for the sandbox
+            with col_c:
+                st.markdown("Opponent linked to main 'Comparison team' filter.")
+            opponent = compare_team
 
+            opp_row = team_df[team_df["Squad"] == opponent].iloc[0]
+            res     = compute_fwpl(sel_row, opp_row, cur_f, new_f)
+            fwpl_v  = res["fwpl"]
+
+            # ── Top metric cards ──
             ft, fc = fwpl_band(fwpl_v)
-            metric_card("FWPL", f"{fwpl_v:+.3f}",
-                        "Win probability shift (Poisson, 10k runs)", ft, fc)
-            st.markdown('<div class="warn-box">FWPL uses real xG/xGA data with formation multipliers. The multipliers are evidence-based heuristics, not match-by-match observed formations.</div>', unsafe_allow_html=True)
+            fm1, fm2, fm3, fm4 = st.columns(4)
+            with fm1:
+                metric_card("FWPL", f"{fwpl_v:+.3f}",
+                            "Win% shift vs selected opponent", ft, fc)
+            with fm2:
+                metric_card(f"Win% · {cur_f}",
+                            f"{res['curr'][0]*100:.1f}%",
+                            f"vs {opponent}", "Current", "badge-info")
+            with fm3:
+                metric_card(f"Win% · {new_f}",
+                            f"{res['new_'][0]*100:.1f}%",
+                            f"vs {opponent}", "Proposed", "badge-strong")
+            with fm4:
+                metric_card("λ matchup (proposed)",
+                            f"{res['lam_for_new']:.2f} v {res['lam_opp_new']:.2f}",
+                            f"{selected_team} xG | {opponent} xG",
+                            "Expected goals/match", "badge-moderate")
+
+            st.markdown("")
+
+            # ── LEFT chart: outcome probability bars for selected opponent ──
+            c1, c2 = st.columns(2)
+            with c1:
+                outcomes  = ["Win", "Draw", "Loss"]
+                cur_vals  = list(res["curr"])
+                new_vals  = list(res["new_"])
+                fig1 = go.Figure()
+                fig1.add_trace(go.Bar(
+                    x=outcomes, y=[v*100 for v in cur_vals], name=cur_f,
+                    marker_color=THEME["accent_2"],
+                    text=[f"{v*100:.1f}%" for v in cur_vals],
+                    textposition="outside",
+                ))
+                fig1.add_trace(go.Bar(
+                    x=outcomes, y=[v*100 for v in new_vals], name=new_f,
+                    marker_color=THEME["accent"],
+                    text=[f"{v*100:.1f}%" for v in new_vals],
+                    textposition="outside",
+                ))
+                fig1.update_layout(barmode="group", yaxis_range=[0, 105],
+                                   yaxis_title="Probability (%)")
+                style_plot(fig1, f"{selected_team} vs {opponent} — outcome probabilities", 420)
+                st.plotly_chart(fig1, use_container_width=True)
+
+            # ── RIGHT chart: Win% for CURRENT formation across ALL opponents ──
+            # This is the proof that opponent changes the result
+            with c2:
+                # Build list of opponents (all other teams) for the across-opponents chart
+                opp_options = [t for t in teams if t != selected_team]
+                all_win = []
+                for oname in opp_options:
+                    orow = team_df[team_df["Squad"] == oname].iloc[0]
+                    r    = compute_fwpl(sel_row, orow, cur_f, new_f)
+                    all_win.append({
+                        "Opponent": oname,
+                        f"{cur_f} Win%": round(r["curr"][0]*100, 1),
+                        f"{new_f} Win%": round(r["new_"][0]*100, 1),
+                        "FWPL": round(r["fwpl"]*100, 2),
+                    })
+                aw_df = pd.DataFrame(all_win).sort_values(f"{new_f} Win%", ascending=True)
+
+                # Highlight selected opponent
+                colours_cur = [
+                    THEME["warning"] if row["Opponent"] == opponent else THEME["accent_2"]
+                    for _, row in aw_df.iterrows()
+                ]
+                colours_new = [
+                    THEME["warning"] if row["Opponent"] == opponent else THEME["accent"]
+                    for _, row in aw_df.iterrows()
+                ]
+
+                fig2 = go.Figure()
+                fig2.add_trace(go.Bar(
+                    y=aw_df["Opponent"],
+                    x=aw_df[f"{cur_f} Win%"],
+                    name=cur_f,
+                    orientation="h",
+                    marker_color=colours_cur,
+                    opacity=0.7,
+                ))
+                fig2.add_trace(go.Bar(
+                    y=aw_df["Opponent"],
+                    x=aw_df[f"{new_f} Win%"],
+                    name=new_f,
+                    orientation="h",
+                    marker_color=colours_new,
+                    opacity=0.9,
+                ))
+                fig2.update_layout(
+                    barmode="overlay",
+                    xaxis_title="Win % (10,000 simulations)",
+                    xaxis_range=[0, 100],
+                    legend=dict(orientation="h", y=1.08),
+                )
+                style_plot(fig2,
+                    f"{selected_team} {cur_f}→{new_f} Win% vs every PL team  "
+                    f"(highlighted = {opponent})", 500)
+                st.plotly_chart(fig2, use_container_width=True)
+
+            # ── Full probability table ──
+            prob_table = pd.DataFrame({
+                "Formation": [cur_f, new_f],
+                "Opponent":  [opponent, opponent],
+                "Opp att str": [res["opp_att_str"], res["opp_att_str"]],
+                "Opp def str": [res["opp_def_str"], res["opp_def_str"]],
+                "λ team":    [res["lam_for_cur"], res["lam_for_new"]],
+                "λ opp":     [res["lam_opp_cur"], res["lam_opp_new"]],
+                "Win %":     [res["curr"][0]*100, res["new_"][0]*100],
+                "Draw %":    [res["curr"][1]*100, res["new_"][1]*100],
+                "Loss %":    [res["curr"][2]*100, res["new_"][2]*100],
+                "FWPL":      [0.0, fwpl_v*100],
+            })
+            st.dataframe(
+                prob_table.style.format({
+                    "Opp att str":"{:.3f}", "Opp def str":"{:.3f}",
+                    "λ team":"{:.3f}", "λ opp":"{:.3f}",
+                    "Win %":"{:.2f}", "Draw %":"{:.2f}", "Loss %":"{:.2f}",
+                    "FWPL":"{:+.2f}",
+                }),
+                use_container_width=True, hide_index=True,
+            )
+
+            st.markdown(
+                '<div class="warn-box"><b>Note:</b> Formation multipliers (att/def factors) are the only assumed values. All xG/xGA base rates come from the season data. Changing the opponent updates λ_team and λ_opp and the probabilities shown.</div>',
+                unsafe_allow_html=True,
+            )
 
     # ══════════════════════════════════════════
     # TAB 5 — ABOUT DATA
@@ -904,7 +1196,7 @@ Rename to <code>defensive_stats.csv</code> and place in <code>./data/</code>
         st.dataframe(gloss, use_container_width=True, hide_index=True, height=450)
 
     st.markdown("---")
-    st.caption("All KPIs computed from verified FBref-sourced fields only. No fabricated or proxy values.")
+    st.caption("KPIs are computed from FBref fields; no proxy values are used.")
 
 
 if __name__ == "__main__":
