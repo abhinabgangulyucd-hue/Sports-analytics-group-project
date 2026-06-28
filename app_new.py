@@ -12,7 +12,7 @@ import streamlit as st
 # PAGE CONFIG
 # ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="Football Coaching Intelligence",
+    page_title="Tactical - Edge",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -574,8 +574,8 @@ def coach_notes(team_row: pd.Series, tp: pd.DataFrame) -> List[str]:
 # MAIN APP
 # ─────────────────────────────────────────────
 def main():
-    st.title("Football Coaching Intelligence Dashboard")
-    st.caption("Premier League 2024/25 — All KPIs use only real data fields, no proxies.")
+    st.title("Tactical Edge")
+    st.caption("Premier League 2024/25")
 
     try:
         team_raw, fbref_raw, squad_raw, def_df, def_path = load_data()
