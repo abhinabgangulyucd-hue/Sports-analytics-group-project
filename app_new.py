@@ -911,7 +911,7 @@ def main():
                     "Progression_90":"{:.2f}","ATI":"{:.3f}","Selection_Load":"{:.2f}",
                     "Def_Actions_90":"{:.2f}","Sh":"{:.0f}","TklW":"{:.1f}","Int":"{:.1f}","Clr":"{:.1f}",
                 }),
-                use_container_width=True, height=480,
+                use_container_width=True, hide_index=True, height=480,
             )
 
     # ══════════════════════════════════════════
@@ -943,7 +943,7 @@ def main():
                         "90s":"{:.1f}","ATI":"{:.3f}","xAG_90":"{:.2f}",
                         "Progression_90":"{:.2f}","Coach_Value":"{:.3f}",
                     }),
-                    use_container_width=True, height=450,
+                    use_container_width=True, hide_index=True, height=450,
                 )
                 
         with sub_tabs[1]:
@@ -994,7 +994,7 @@ def main():
                              xg_b, xg_n, xga_b, xga_n],
                 })
                 st.dataframe(summary.style.format({"Value":"{:.3f}"}),
-                             use_container_width=True)
+                             use_container_width=True, hide_index=True)
 
         with sub_tabs[2]:
             st.markdown(
